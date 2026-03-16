@@ -48,7 +48,7 @@ class TastySession:
 session = TastySession()
 
 # ────────────────────────────────────────────────
-#  Core functions (unchanged)
+#  Core functions
 # ────────────────────────────────────────────────
 
 def get_market_metrics(symbols):
@@ -129,7 +129,7 @@ def compute_forward_factor(iv_short, iv_long, dte_short, dte_long):
 
 root = tk.Tk()
 root.title("Tasty Forward Factor Scanner")
-root.geometry("700x700")
+root.geometry("700x700")  # ← Window size set to 700x700
 root.resizable(True, True)
 
 # ── Top frame ──
@@ -150,8 +150,18 @@ tk.Label(top_frame, text="Long DTE:").grid(row=2, column=0, padx=5, pady=5, stic
 dte_long_var = tk.StringVar(value="60")
 tk.Entry(top_frame, textvariable=dte_long_var, width=10).grid(row=2, column=1, sticky="w", padx=5)
 
-run_btn = tk.Button(top_frame, text="Run Scan", bg="#4CAF50", fg="white", font=("Arial", 11, "bold"))
-run_btn.grid(row=3, column=0, columnspan=3, pady=10)
+filter_var = tk.BooleanVar(value=False)
+tk.Checkbutton(top_frame, text="Only show Forward Factor > 20%", variable=filter_var).grid(row=3, column=0, columnspan=3, sticky="w", pady=5)
+
+# Run Scan and Save buttons side by side on the same row
+button_frame = tk.Frame(top_frame)
+button_frame.grid(row=4, column=0, columnspan=3, pady=10, sticky="ew")
+
+run_btn = tk.Button(button_frame, text="Run Scan", bg="#4CAF50", fg="white", font=("Arial", 11, "bold"))
+run_btn.pack(side="left", padx=10)
+
+save_btn = tk.Button(button_frame, text="Save Results to CSV", bg="#2196F3", fg="white", state="disabled")
+save_btn.pack(side="left", padx=10)
 
 status_label = tk.Label(root, text="Ready", bd=1, relief="sunken", anchor="w")
 status_label.pack(side="bottom", fill="x")
@@ -160,15 +170,18 @@ status_label.pack(side="bottom", fill="x")
 table_frame = tk.Frame(root)
 table_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
-tree = ttk.Treeview(table_frame, show="headings")   # ← This line hides the empty tree column
+tree = ttk.Treeview(table_frame, show="headings")
 tree.pack(fill="both", expand=True)
 
 scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
 scrollbar.pack(side="right", fill="y")
 tree.configure(yscrollcommand=scrollbar.set)
 
-# Tag for red Forward Factor
+# Tag for red text
 tree.tag_configure("red", foreground="red")
+
+# Global variable to store current results for saving
+current_results = []
 
 # ── Functions ──
 
@@ -180,9 +193,19 @@ def browse_csv():
     if path:
         file_path_var.set(path)
 
+def clear_table():
+    for item in tree.get_children():
+        tree.delete(item)
+    for col in tree["columns"]:
+        tree.heading(col, text="")
+    tree["columns"] = ()
+
 def run_scan():
+    global current_results
     status_label.config(text="Scanning...", fg="blue")
     root.update()
+
+    clear_table()  # Clear previous results every time
 
     csv_path = file_path_var.get()
     if not csv_path or not os.path.exists(csv_path):
@@ -200,12 +223,11 @@ def run_scan():
         status_label.config(text="Ready", fg="black")
         return
 
-    # Read tickers
     tickers = []
     with open(csv_path, newline='') as f:
         reader = csv.reader(f)
         try:
-            next(reader)  # skip header if present
+            next(reader)  # skip header
         except StopIteration:
             pass
         for row in reader:
@@ -269,42 +291,72 @@ def run_scan():
                 "Symbol": symbol,
                 h_short: f"{iv_short*100:.2f}%" if iv_short else "N/A",
                 h_long: f"{iv_long*100:.2f}%" if iv_long else "N/A",
-                "Forward Factor": ff_pct,          # numeric for sorting
-                "FF_display": f"{ff_pct:.2f}%"     # string for display
+                "Forward Factor": ff_pct,
+                "FF_display": f"{ff_pct:.2f}%"
             })
 
     # Sort descending by Forward Factor
     results.sort(key=lambda x: x["Forward Factor"], reverse=True)
 
-    # Clear previous table
-    for col in tree["columns"]:
-        tree.heading(col, text="")
-    tree["columns"] = ()
+    # Apply filter if checkbox is checked
+    if filter_var.get():
+        results = [r for r in results if r["Forward Factor"] > 20]
+
+    current_results = results  # Store for saving later
 
     if not results:
         status_label.config(text="No valid results found", fg="orange")
+        save_btn.config(state="disabled")
         return
 
-    # Build columns (Symbol + dynamic IV columns + Forward Factor)
+    # Build dynamic columns
     columns = ["Symbol"] + [k for k in results[0].keys() if k in [list(results[0].keys())[1], list(results[0].keys())[2]]] + ["Forward Factor"]
     tree["columns"] = columns
 
     for col in columns:
         tree.heading(col, text=col)
-        tree.column(col, width=180, anchor="center")
+        tree.column(col, width=150, anchor="center")  # Reduced width slightly for smaller 700x700 window
 
-    # Insert rows with conditional red coloring
+    # Insert rows with conditional coloring
     for res in results:
         values = [res.get(col, "N/A") for col in columns]
-        # Replace Forward Factor with display string
-        values[-1] = res["FF_display"]
+        values[-1] = res["FF_display"]  # use formatted string
         tags = ("red",) if res["Forward Factor"] > 20 else ()
         tree.insert("", "end", values=values, tags=tags)
 
     status_label.config(text=f"Scan complete — {len(results)} symbols (sorted by FF descending)", fg="green")
+    save_btn.config(state="normal")
+
+def save_to_csv():
+    if not current_results:
+        messagebox.showinfo("No Data", "No results to save yet.")
+        return
+
+    file_path = filedialog.asksaveasfilename(
+        defaultextension=".csv",
+        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        title="Save Results As"
+    )
+    if not file_path:
+        return
+
+    # Get current column headers
+    columns = tree["columns"]
+
+    with open(file_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        # Write header
+        writer.writerow(columns)
+        # Write rows
+        for item in tree.get_children():
+            row = tree.item(item)['values']
+            writer.writerow(row)
+
+    messagebox.showinfo("Saved", f"Results saved to:\n{file_path}")
 
 # ── Bind buttons ──
 browse_btn.config(command=browse_csv)
 run_btn.config(command=run_scan)
+save_btn.config(command=save_to_csv)
 
 root.mainloop()
