@@ -2,11 +2,12 @@ import requests
 import time
 import math
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import os
 from dotenv import load_dotenv
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+
 
 # ────────────────────────────────────────────────
 #  Load credentials
@@ -69,6 +70,24 @@ def get_market_metrics(symbols):
         return raw
     return []
 
+def get_expirations_for_spy():
+    """Fetch all available expiration dates for SPY"""
+    symbol = "SPY"
+    url = f"{BASE_URL}/option-chains/{symbol}/nested"
+    headers = session.get_headers()
+    resp = requests.get(url, headers=headers)
+    if resp.status_code != 200:
+        return []
+
+    raw = resp.json()
+    expirations = []
+    for item in raw.get("data", {}).get("items", []):
+        for exp in item.get("expirations", []):
+            date_str = exp.get("expiration-date", "").split("T")[0]
+            if date_str:
+                expirations.append(date_str)
+    return sorted(set(expirations))  # unique, sorted
+
 def calculate_dte(exp_date_str):
     try:
         if 'T' in exp_date_str:
@@ -129,7 +148,7 @@ def compute_forward_factor(iv_short, iv_long, dte_short, dte_long):
 
 root = tk.Tk()
 root.title("Tasty Forward Factor Scanner")
-root.geometry("700x700")  # ← Window size set to 700x700
+root.geometry("700x700")
 root.resizable(True, True)
 
 # ── Top frame ──
@@ -138,22 +157,23 @@ top_frame.pack(pady=10, padx=10, fill="x")
 
 tk.Label(top_frame, text="CSV File with tickers:").grid(row=0, column=0, padx=5, sticky="e")
 file_path_var = tk.StringVar()
-tk.Entry(top_frame, textvariable=file_path_var, width=60, state="readonly").grid(row=0, column=1, padx=5)
+tk.Entry(top_frame, textvariable=file_path_var, width=50, state="readonly").grid(row=0, column=1, padx=5)
 browse_btn = tk.Button(top_frame, text="Browse CSV")
 browse_btn.grid(row=0, column=2, padx=5)
 
-tk.Label(top_frame, text="Short DTE:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
-dte_short_var = tk.StringVar(value="30")
-tk.Entry(top_frame, textvariable=dte_short_var, width=10).grid(row=1, column=1, sticky="w", padx=5)
+tk.Label(top_frame, text="Short Expiration (from SPY):").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+short_date_var = tk.StringVar()
+short_combo = ttk.Combobox(top_frame, textvariable=short_date_var, state="readonly", width=20)
+short_combo.grid(row=1, column=1, sticky="w", padx=5)
 
-tk.Label(top_frame, text="Long DTE:").grid(row=2, column=0, padx=5, pady=5, sticky="e")
-dte_long_var = tk.StringVar(value="60")
-tk.Entry(top_frame, textvariable=dte_long_var, width=10).grid(row=2, column=1, sticky="w", padx=5)
+tk.Label(top_frame, text="Long Expiration (from SPY):").grid(row=2, column=0, padx=5, pady=5, sticky="e")
+long_date_var = tk.StringVar()
+long_combo = ttk.Combobox(top_frame, textvariable=long_date_var, state="readonly", width=20)
+long_combo.grid(row=2, column=1, sticky="w", padx=5)
 
 filter_var = tk.BooleanVar(value=False)
 tk.Checkbutton(top_frame, text="Only show Forward Factor > 20%", variable=filter_var).grid(row=3, column=0, columnspan=3, sticky="w", pady=5)
 
-# Run Scan and Save buttons side by side on the same row
 button_frame = tk.Frame(top_frame)
 button_frame.grid(row=4, column=0, columnspan=3, pady=10, sticky="ew")
 
@@ -177,10 +197,8 @@ scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
 scrollbar.pack(side="right", fill="y")
 tree.configure(yscrollcommand=scrollbar.set)
 
-# Tag for red text
 tree.tag_configure("red", foreground="red")
 
-# Global variable to store current results for saving
 current_results = []
 
 # ── Functions ──
@@ -200,12 +218,45 @@ def clear_table():
         tree.heading(col, text="")
     tree["columns"] = ()
 
+def populate_expiration_dropdowns():
+    status_label.config(text="Fetching SPY expirations...", fg="blue")
+    root.update()
+
+    expirations = get_expirations_for_spy()
+
+    if not expirations:
+        messagebox.showwarning("Warning", "Could not fetch expiration dates from SPY.")
+        status_label.config(text="Ready", fg="black")
+        short_combo['values'] = []
+        long_combo['values'] = []
+        return
+
+    # Convert string dates to aware datetime objects for accurate comparison
+    today = datetime.now(timezone.utc)
+    exp_datetimes = [datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc) for date in expirations]
+
+    short_combo['values'] = expirations
+    long_combo['values'] = expirations
+
+    # Auto-select closest to 30 and 60 days
+    target_short = today + timedelta(days=30)
+    target_long = today + timedelta(days=60)
+
+    # Find index closest to target
+    short_idx = min(range(len(exp_datetimes)), key=lambda i: abs(exp_datetimes[i] - target_short).days)
+    long_idx = min(range(len(exp_datetimes)), key=lambda i: abs(exp_datetimes[i] - target_long).days)
+
+    short_combo.current(short_idx)
+    long_combo.current(long_idx)
+
+    status_label.config(text="Ready", fg="black")
+
 def run_scan():
     global current_results
     status_label.config(text="Scanning...", fg="blue")
     root.update()
 
-    clear_table()  # Clear previous results every time
+    clear_table()
 
     csv_path = file_path_var.get()
     if not csv_path or not os.path.exists(csv_path):
@@ -213,13 +264,17 @@ def run_scan():
         status_label.config(text="Ready", fg="black")
         return
 
-    try:
-        short_dte = int(dte_short_var.get())
-        long_dte = int(dte_long_var.get())
-        if short_dte >= long_dte or short_dte <= 0:
-            raise ValueError("Short DTE must be positive and less than Long DTE")
-    except:
-        messagebox.showerror("Error", "DTE values must be positive integers (Short < Long)")
+    short_date = short_date_var.get().strip()
+    long_date = long_date_var.get().strip()
+    if not short_date or not long_date:
+        messagebox.showerror("Error", "Short and Long expiration dates are required.")
+        status_label.config(text="Ready", fg="black")
+        return
+
+    dte_short = calculate_dte(short_date)
+    dte_long = calculate_dte(long_date)
+    if dte_short <= 0 or dte_long <= 0 or dte_short >= dte_long:
+        messagebox.showerror("Error", "Invalid expiration dates (must be future dates, short before long).")
         status_label.config(text="Ready", fg="black")
         return
 
@@ -227,7 +282,7 @@ def run_scan():
     with open(csv_path, newline='') as f:
         reader = csv.reader(f)
         try:
-            next(reader)  # skip header
+            next(reader)
         except StopIteration:
             pass
         for row in reader:
@@ -256,6 +311,15 @@ def run_scan():
             continue
 
         expirations_raw = row.get("option-expiration-implied-volatilities", [])
+        if not expirations_raw:
+            continue
+
+        # Check if this symbol has both selected dates
+        has_short = any(exp["expiration-date"].startswith(short_date) for exp in expirations_raw)
+        has_long = any(exp["expiration-date"].startswith(long_date) for exp in expirations_raw)
+        if not (has_short and has_long):
+            continue  # Skip symbols that don't match the selected SPY-based dates
+
         exp_list = []
         for exp in expirations_raw:
             dte = calculate_dte(exp["expiration-date"])
@@ -274,18 +338,24 @@ def run_scan():
         if len(exp_list) < 2:
             continue
 
-        iv_short, date_short = interpolate_iv_with_dte(short_dte, exp_list)
-        iv_long, date_long = interpolate_iv_with_dte(long_dte, exp_list)
+        # Use exact selected dates (no interpolation needed)
+        iv_short = None
+        iv_long = None
+        for exp in exp_list:
+            if exp["exp_date"].startswith(short_date):
+                iv_short = exp["iv"]
+            if exp["exp_date"].startswith(long_date):
+                iv_long = exp["iv"]
 
         ff_pct = compute_forward_factor(
             iv_short, iv_long,
-            dte_short=short_dte if iv_short else None,
-            dte_long=long_dte if iv_long else None
+            dte_short=dte_short,
+            dte_long=dte_long
         )
 
         if ff_pct is not None:
-            h_short = f"IV {date_short.split('T')[0] or 'N/A'} (~{short_dte} DTE)" if date_short else f"IV ~{short_dte} DTE"
-            h_long = f"IV {date_long.split('T')[0] or 'N/A'} (~{long_dte} DTE)" if date_long else f"IV ~{long_dte} DTE"
+            h_short = f"IV {short_date} (~{dte_short} DTE)"
+            h_long = f"IV {long_date} (~{dte_long} DTE)"
 
             results.append({
                 "Symbol": symbol,
@@ -298,29 +368,29 @@ def run_scan():
     # Sort descending by Forward Factor
     results.sort(key=lambda x: x["Forward Factor"], reverse=True)
 
-    # Apply filter if checkbox is checked
+    # Apply filter if checked
     if filter_var.get():
         results = [r for r in results if r["Forward Factor"] > 20]
 
-    current_results = results  # Store for saving later
+    current_results = results
 
     if not results:
-        status_label.config(text="No valid results found", fg="orange")
+        status_label.config(text="No valid results found (or no matching expirations)", fg="orange")
         save_btn.config(state="disabled")
         return
 
-    # Build dynamic columns
-    columns = ["Symbol"] + [k for k in results[0].keys() if k in [list(results[0].keys())[1], list(results[0].keys())[2]]] + ["Forward Factor"]
+    # Build columns
+    columns = ["Symbol", h_short, h_long, "Forward Factor"]
     tree["columns"] = columns
 
     for col in columns:
         tree.heading(col, text=col)
-        tree.column(col, width=150, anchor="center")  # Reduced width slightly for smaller 700x700 window
+        tree.column(col, width=150, anchor="center")
 
     # Insert rows with conditional coloring
     for res in results:
         values = [res.get(col, "N/A") for col in columns]
-        values[-1] = res["FF_display"]  # use formatted string
+        values[-1] = res["FF_display"]
         tags = ("red",) if res["Forward Factor"] > 20 else ()
         tree.insert("", "end", values=values, tags=tags)
 
@@ -340,14 +410,11 @@ def save_to_csv():
     if not file_path:
         return
 
-    # Get current column headers
     columns = tree["columns"]
 
     with open(file_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
-        # Write header
         writer.writerow(columns)
-        # Write rows
         for item in tree.get_children():
             row = tree.item(item)['values']
             writer.writerow(row)
@@ -358,5 +425,8 @@ def save_to_csv():
 browse_btn.config(command=browse_csv)
 run_btn.config(command=run_scan)
 save_btn.config(command=save_to_csv)
+
+# Populate SPY expirations on startup
+populate_expiration_dropdowns()
 
 root.mainloop()
