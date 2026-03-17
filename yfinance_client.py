@@ -56,6 +56,36 @@ class YFinanceClient:
                     if iso:
                         return iso
 
+            # Prefer the ticker.calendar value when available (contains 'Earnings Date')
+            try:
+                cal = getattr(t, "calendar", None)
+                if cal is not None:
+                    # Try common key access; cal may be a pandas DataFrame or dict-like
+                    ed_val = None
+                    try:
+                        if hasattr(cal, 'get'):
+                            ed_val = cal.get('Earnings Date')
+                    except Exception:
+                        ed_val = None
+
+                    if ed_val is None:
+                        try:
+                            ed_val = cal['Earnings Date']
+                        except Exception:
+                            ed_val = None
+
+                    if ed_val is not None:
+                        # ed_val may be a pandas Series/Index/Timestamp or sequence; take first element
+                        try:
+                            first = ed_val.iloc[0] if hasattr(ed_val, 'iloc') else (ed_val[0] if isinstance(ed_val, (list, tuple)) else ed_val)
+                        except Exception:
+                            first = ed_val
+                        iso = self._to_iso(first)
+                        if iso:
+                            return iso
+            except Exception:
+                pass
+
             # Try the newer helper that returns a DataFrame (yfinance >= 0.2.x)
             try:
                 ed = t.get_earnings_dates(limit=1)
@@ -98,10 +128,28 @@ def read_tickers_from_csv(path: str) -> List[str]:
     tickers: List[str] = []
     with open(path, newline="") as f:
         reader = csv.reader(f)
-        try:
-            next(reader)
-        except StopIteration:
-            pass
+        # Detect and skip a header row if it looks like one (e.g. "symbol", "ticker")
+        first = next(reader, None)
+        def _is_header(cell: str) -> bool:
+            if not cell:
+                return False
+            c = cell.strip()
+            low = c.lower()
+            if low in ("symbol", "ticker", "tickers"):
+                return True
+            # If cell contains letters but is not all-uppercase ticker-like (e.g. "Symbol", "Ticker")
+            if any(ch.isalpha() for ch in c) and not c.replace('.', '').isupper():
+                return True
+            # Unusually long first cell likely a header
+            if len(c) > 6:
+                return True
+            return False
+
+        if first and first[0].strip():
+            first_cell = first[0].strip()
+            if not _is_header(first_cell):
+                tickers.append(first_cell.upper())
+
         for row in reader:
             if row and row[0].strip():
                 tickers.append(row[0].strip().upper())

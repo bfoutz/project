@@ -7,6 +7,7 @@ import os
 from dotenv import load_dotenv
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from yfinance_client import YFinanceClient
 
 
 # ────────────────────────────────────────────────
@@ -47,6 +48,7 @@ class TastySession:
         return {"Authorization": f"Bearer {self.access_token}"}
 
 session = TastySession()
+yf_client = YFinanceClient()
 
 # ────────────────────────────────────────────────
 #  Core functions
@@ -198,6 +200,8 @@ scrollbar.pack(side="right", fill="y")
 tree.configure(yscrollcommand=scrollbar.set)
 
 tree.tag_configure("red", foreground="red")
+# Earnings-highlight: dark purple background with white text
+tree.tag_configure("purple", background="#6A1B9A", foreground="white")
 
 current_results = []
 
@@ -281,10 +285,26 @@ def run_scan():
     tickers = []
     with open(csv_path, newline='') as f:
         reader = csv.reader(f)
-        try:
-            next(reader)
-        except StopIteration:
-            pass
+
+        def _is_header(cell: str) -> bool:
+            if not cell:
+                return False
+            c = cell.strip()
+            low = c.lower()
+            if low in ("symbol", "ticker", "tickers"):
+                return True
+            if any(ch.isalpha() for ch in c) and not c.replace('.', '').isupper():
+                return True
+            if len(c) > 6:
+                return True
+            return False
+
+        first = next(reader, None)
+        if first and first[0].strip():
+            first_cell = first[0].strip()
+            if not _is_header(first_cell):
+                tickers.append(first_cell.upper())
+
         for row in reader:
             if row and row[0].strip():
                 tickers.append(row[0].strip().upper())
@@ -296,6 +316,12 @@ def run_scan():
 
     status_label.config(text=f"Fetching data for {len(tickers)} symbols...", fg="blue")
     root.update()
+
+    # Fetch upcoming earnings dates for the tickers (may be slow for many symbols)
+    try:
+        earnings_map = yf_client.fetch_next_earnings_for(tickers)
+    except Exception:
+        earnings_map = {s: None for s in tickers}
 
     try:
         metrics = get_market_metrics(tickers)
@@ -357,10 +383,13 @@ def run_scan():
             h_short = f"IV {short_date} (~{dte_short} DTE)"
             h_long = f"IV {long_date} (~{dte_long} DTE)"
 
+            earnings_date = earnings_map.get(symbol) if earnings_map is not None else None
+
             results.append({
                 "Symbol": symbol,
                 h_short: f"{iv_short*100:.2f}%" if iv_short else "N/A",
                 h_long: f"{iv_long*100:.2f}%" if iv_long else "N/A",
+                "Earnings Date": earnings_date or "N/A",
                 "Forward Factor": ff_pct,
                 "FF_display": f"{ff_pct:.2f}%"
             })
@@ -380,7 +409,7 @@ def run_scan():
         return
 
     # Build columns
-    columns = ["Symbol", h_short, h_long, "Forward Factor"]
+    columns = ["Symbol", h_short, h_long, "Earnings Date", "Forward Factor"]
     tree["columns"] = columns
 
     for col in columns:
@@ -390,8 +419,27 @@ def run_scan():
     # Insert rows with conditional coloring
     for res in results:
         values = [res.get(col, "N/A") for col in columns]
-        values[-1] = res["FF_display"]
-        tags = ("red",) if res["Forward Factor"] > 20 else ()
+        # replace Forward Factor numeric with formatted display
+        try:
+            ff_idx = columns.index("Forward Factor")
+            values[ff_idx] = res["FF_display"]
+        except Exception:
+            pass
+
+        # determine tag: purple if earnings date inside short-long window, else red if FF>20
+        tags = ()
+        ed = res.get("Earnings Date")
+        try:
+            if ed and ed != "N/A":
+                dte_ed = calculate_dte(ed)
+                if dte_ed >= dte_short and dte_ed <= dte_long:
+                    tags = ("purple",)
+        except Exception:
+            tags = ()
+
+        if not tags and res["Forward Factor"] > 20:
+            tags = ("red",)
+
         tree.insert("", "end", values=values, tags=tags)
 
     status_label.config(text=f"Scan complete — {len(results)} symbols (sorted by FF descending)", fg="green")
