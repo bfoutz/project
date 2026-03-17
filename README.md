@@ -38,6 +38,9 @@ A simple desktop GUI application that connects to the **tastytrade Open API** to
    Verify:
    - Windows: open Command Prompt → type `python --version` → should show Python 3.x
    - macOS: open Terminal → type `python3 --version`
+  
+    Install yfinance plugin, run 
+    `pip install yfinance`
 
 2. **Create a project folder**
 
