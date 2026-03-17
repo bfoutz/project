@@ -62,19 +62,17 @@ A simple desktop GUI application that connects to the **tastytrade Open API** to
      - Windows may warn about removing `.txt` — click Yes
    - Open it with Notepad/TextEdit
    - Paste these lines:
-     
+
+```    
 TASTY_CLIENT_ID=your_client_id_here
-
 TASTY_CLIENT_SECRET=your_client_secret_here
-
 TASTY_REFRESH_TOKEN=your_refresh_token_here
-
 TASTY_BASE_URL=https://api.tastytrade.com
-
+```
 
 - Replace the placeholder values with your real ones
 
-- **How to get the credentials**:
+**How to get the credentials**:
 1. Log in to https://my.tastytrade.com
 2. Go to **Account** → **API Access** → **OAuth Applications**
 3. Click **Create New Application** (or similar button)
@@ -90,58 +88,73 @@ TASTY_BASE_URL=https://api.tastytrade.com
 - Open **Command Prompt** (Windows: Windows key + S → type `cmd`) or **Terminal** (macOS)
 - Navigate to your folder:
 
-
-cd Desktop\TastyScanner
+`cd Desktop\TastyScanner`
 (macOS/Linux: cd ~/Desktop/TastyScanner)
 
-Run these commands one by one: python -m pip install --upgrade pip
-python -m pip install requests python-dotenv(on macOS/Linux you may need python3 instead of python)
+* Run these commands one by one: 
+`python -m pip install --upgrade pip`
+`python -m pip install requests python-dotenv` 
+(on macOS/Linux you may need python3 instead of python)
 
 
-Create a sample CSV file with tickers
+* Create a sample CSV file with tickers
 In the same folder, create a new text file → name it tickers.csv
 Open it and add one ticker per line (no header needed):
+```
 TSLA
 AAPL
 NVDA
 SPY
 USO
 QQQ
+```
 
 Save it
 
-Run the program
-In the same Command Prompt/Terminal window, type:Bashpython tasty_ff_gui.py(macOS/Linux: python3 tasty_ff_gui.py)
+## Run the program
+In the same Command Prompt/Terminal window, type:Bash
+
+```
+python tasty_ff_gui.py(macOS/Linux: python3 tasty_ff_gui.py)
+```
 Press Enter → the GUI window should open!
 
 
-How to Use
+## How to Use
 
-Click Browse CSV → select your tickers.csv
-Set Short DTE and Long DTE (defaults: 30 and 60)
-Click Run Scan
-Wait a few seconds → results appear in the table
-Sorted by Forward Factor descending
-Forward Factor > 20% appears in red
+1. Click Browse CSV → select your tickers.csv
+1. Set Short DTE and Long DTE (defaults: 30 and 60)
+1. Click Run Scan
+1. Wait a few seconds → results appear in the table
+1. Sorted by Forward Factor descending
+1. Forward Factor > 20% appears in red
 
 
-Troubleshooting
+## Troubleshooting
 
-“python is not recognized”
+### python is not recognized
 Reinstall Python and make sure “Add to PATH” was checked. Restart computer.
-401/403 Unauthorized
+
+### 401/403 Unauthorized
 Double-check .env values. Refresh token may have expired — regenerate in tastytrade OAuth settings.
-No results in table
-Verify CSV has valid tickers
-Try different DTE values
-Ensure symbols have options data
 
-Window size issues
-Edit this line in the code:Pythonroot.geometry("1100x700")Try "1200x800" or "1400x900" for better fit.
+### No results in table
+* Verify CSV has valid tickers
+* Try different DTE values
+* Ensure symbols have options data
 
-License
+### Window size issues
+Edit this line in the code:
+
+```python
+Pythonroot.geometry("1100x700")
+# Try "1200x800" or "1400x900" for better fit.
+```
+
+### License
 MIT License (or choose your own)
 Questions or improvements?
 → Open an issue on GitHub
 → Or reach out on X: @itnetworkguru
+
 Happy scanning!
