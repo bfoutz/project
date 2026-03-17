@@ -7,11 +7,9 @@ import os
 from dotenv import load_dotenv
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import yfinance as yf
 
-
-# ────────────────────────────────────────────────
-#  Load credentials
-# ────────────────────────────────────────────────
+# Load credentials
 load_dotenv()
 
 CLIENT_ID = os.getenv("TASTY_CLIENT_ID")
@@ -48,10 +46,6 @@ class TastySession:
 
 session = TastySession()
 
-# ────────────────────────────────────────────────
-#  Core functions
-# ────────────────────────────────────────────────
-
 def get_market_metrics(symbols):
     if not symbols:
         return []
@@ -71,9 +65,7 @@ def get_market_metrics(symbols):
     return []
 
 def get_expirations_for_spy():
-    """Fetch all available expiration dates for SPY"""
-    symbol = "SPY"
-    url = f"{BASE_URL}/option-chains/{symbol}/nested"
+    url = f"{BASE_URL}/option-chains/SPY/nested"
     headers = session.get_headers()
     resp = requests.get(url, headers=headers)
     if resp.status_code != 200:
@@ -86,7 +78,7 @@ def get_expirations_for_spy():
             date_str = exp.get("expiration-date", "").split("T")[0]
             if date_str:
                 expirations.append(date_str)
-    return sorted(set(expirations))  # unique, sorted
+    return sorted(set(expirations))
 
 def calculate_dte(exp_date_str):
     try:
@@ -99,25 +91,32 @@ def calculate_dte(exp_date_str):
     except:
         return -1
 
-def interpolate_iv_with_dte(target_dte, expirations):
-    expirations = [e for e in expirations if e["dte"] > 0]
-    if not expirations:
-        return None, None
-    expirations.sort(key=lambda x: x["dte"])
+def has_earnings_during_window(ticker, long_date_str):
+    try:
+        if ticker in ['BRK.B', 'BF.B', 'BRK-A', 'BF-A']:
+            return False
 
-    if len(expirations) == 1:
-        if abs(expirations[0]["dte"] - target_dte) <= 15:
-            return expirations[0]["iv"], expirations[0]["exp_date"]
-        return None, None
+        long_date = datetime.strptime(long_date_str, "%Y-%m-%d").date()
+        today_date = datetime.now().date()
 
-    for i in range(len(expirations) - 1):
-        low = expirations[i]
-        high = expirations[i + 1]
-        if low["dte"] <= target_dte <= high["dte"]:
-            frac = (target_dte - low["dte"]) / (high["dte"] - low["dte"])
-            iv = low["iv"] + frac * (high["iv"] - low["iv"])
-            return iv, low["exp_date"]
-    return None, None
+        stock = yf.Ticker(ticker)
+        info = stock.info
+
+        earnings_ts = info.get("earningsTimestamp")
+
+        if not earnings_ts:
+            return False
+
+        earnings_date = datetime.fromtimestamp(earnings_ts).date()
+
+        # 🔥 Core filter
+        if today_date <= earnings_date <= long_date:
+            return True
+
+        return False
+
+    except Exception as e:
+        return False
 
 def compute_forward_factor(iv_short, iv_long, dte_short, dte_long):
     if any(x is None for x in [iv_short, iv_long, dte_short, dte_long]):
@@ -151,7 +150,6 @@ root.title("Tasty Forward Factor Scanner")
 root.geometry("700x700")
 root.resizable(True, True)
 
-# ── Top frame ──
 top_frame = tk.Frame(root)
 top_frame.pack(pady=10, padx=10, fill="x")
 
@@ -171,11 +169,12 @@ long_date_var = tk.StringVar()
 long_combo = ttk.Combobox(top_frame, textvariable=long_date_var, state="readonly", width=20)
 long_combo.grid(row=2, column=1, sticky="w", padx=5)
 
-filter_var = tk.BooleanVar(value=False)
-tk.Checkbutton(top_frame, text="Only show Forward Factor > 20%", variable=filter_var).grid(row=3, column=0, columnspan=3, sticky="w", pady=5)
+exclude_earnings_var = tk.BooleanVar(value=True)
+tk.Checkbutton(top_frame, text="Exclude tickers with earnings between today and Long date", 
+               variable=exclude_earnings_var).grid(row=3, column=0, columnspan=3, sticky="w", pady=5)
 
 button_frame = tk.Frame(top_frame)
-button_frame.grid(row=4, column=0, columnspan=3, pady=10, sticky="ew")
+button_frame.grid(row=5, column=0, columnspan=3, pady=10, sticky="ew")
 
 run_btn = tk.Button(button_frame, text="Run Scan", bg="#4CAF50", fg="white", font=("Arial", 11, "bold"))
 run_btn.pack(side="left", padx=10)
@@ -186,7 +185,6 @@ save_btn.pack(side="left", padx=10)
 status_label = tk.Label(root, text="Ready", bd=1, relief="sunken", anchor="w")
 status_label.pack(side="bottom", fill="x")
 
-# ── Table frame ──
 table_frame = tk.Frame(root)
 table_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
@@ -200,8 +198,6 @@ tree.configure(yscrollcommand=scrollbar.set)
 tree.tag_configure("red", foreground="red")
 
 current_results = []
-
-# ── Functions ──
 
 def browse_csv():
     path = filedialog.askopenfilename(
@@ -231,18 +227,15 @@ def populate_expiration_dropdowns():
         long_combo['values'] = []
         return
 
-    # Convert string dates to aware datetime objects for accurate comparison
-    today = datetime.now(timezone.utc)
-    exp_datetimes = [datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc) for date in expirations]
-
     short_combo['values'] = expirations
     long_combo['values'] = expirations
 
-    # Auto-select closest to 30 and 60 days
+    today = datetime.now(timezone.utc)
     target_short = today + timedelta(days=30)
     target_long = today + timedelta(days=60)
 
-    # Find index closest to target
+    exp_datetimes = [datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc) for date in expirations]
+
     short_idx = min(range(len(exp_datetimes)), key=lambda i: abs(exp_datetimes[i] - target_short).days)
     long_idx = min(range(len(exp_datetimes)), key=lambda i: abs(exp_datetimes[i] - target_long).days)
 
@@ -253,7 +246,7 @@ def populate_expiration_dropdowns():
 
 def run_scan():
     global current_results
-    status_label.config(text="Scanning...", fg="blue")
+    status_label.config(text="Calculating Forward Factor for all symbols...", fg="blue")
     root.update()
 
     clear_table()
@@ -278,6 +271,7 @@ def run_scan():
         status_label.config(text="Ready", fg="black")
         return
 
+    # Read tickers
     tickers = []
     with open(csv_path, newline='') as f:
         reader = csv.reader(f)
@@ -294,7 +288,7 @@ def run_scan():
         status_label.config(text="Ready", fg="black")
         return
 
-    status_label.config(text=f"Fetching data for {len(tickers)} symbols...", fg="blue")
+    status_label.config(text=f"Fetching market data for {len(tickers)} symbols...", fg="blue")
     root.update()
 
     try:
@@ -304,21 +298,19 @@ def run_scan():
         status_label.config(text="Error — check credentials", fg="red")
         return
 
-    results = []
+    # STEP 1: Calculate FF for all tickers
+    candidates = []
     for row in metrics:
         symbol = row.get("symbol")
-        if not symbol:
-            continue
+        if not symbol: continue
 
         expirations_raw = row.get("option-expiration-implied-volatilities", [])
-        if not expirations_raw:
-            continue
+        if not expirations_raw: continue
 
-        # Check if this symbol has both selected dates
         has_short = any(exp["expiration-date"].startswith(short_date) for exp in expirations_raw)
         has_long = any(exp["expiration-date"].startswith(long_date) for exp in expirations_raw)
         if not (has_short and has_long):
-            continue  # Skip symbols that don't match the selected SPY-based dates
+            continue
 
         exp_list = []
         for exp in expirations_raw:
@@ -335,51 +327,64 @@ def run_scan():
                     except:
                         pass
 
-        if len(exp_list) < 2:
-            continue
+        if len(exp_list) < 2: continue
 
-        # Use exact selected dates (no interpolation needed)
-        iv_short = None
-        iv_long = None
-        for exp in exp_list:
-            if exp["exp_date"].startswith(short_date):
-                iv_short = exp["iv"]
-            if exp["exp_date"].startswith(long_date):
-                iv_long = exp["iv"]
+        iv_short = next((e["iv"] for e in exp_list if e["exp_date"].startswith(short_date)), None)
+        iv_long = next((e["iv"] for e in exp_list if e["exp_date"].startswith(long_date)), None)
 
-        ff_pct = compute_forward_factor(
-            iv_short, iv_long,
-            dte_short=dte_short,
-            dte_long=dte_long
-        )
+        ff_pct = compute_forward_factor(iv_short, iv_long, dte_short, dte_long)
 
         if ff_pct is not None:
-            h_short = f"IV {short_date} (~{dte_short} DTE)"
-            h_long = f"IV {long_date} (~{dte_long} DTE)"
-
-            results.append({
-                "Symbol": symbol,
-                h_short: f"{iv_short*100:.2f}%" if iv_short else "N/A",
-                h_long: f"{iv_long*100:.2f}%" if iv_long else "N/A",
-                "Forward Factor": ff_pct,
-                "FF_display": f"{ff_pct:.2f}%"
+            candidates.append({
+                "symbol": symbol,
+                "iv_short": iv_short,
+                "iv_long": iv_long,
+                "ff_pct": ff_pct
             })
 
-    # Sort descending by Forward Factor
-    results.sort(key=lambda x: x["Forward Factor"], reverse=True)
+    # STEP 2: ALWAYS filter FF > 20% BEFORE earnings check
+    candidates = [c for c in candidates if c["ff_pct"] > 20]
 
-    # Apply filter if checked
-    if filter_var.get():
-        results = [r for r in results if r["Forward Factor"] > 20]
+    status_label.config(
+        text=f"Found {len(candidates)} symbols with FF > 20%. Checking earnings...",
+        fg="blue"
+    )
+    root.update()
+
+    # STEP 3: ONLY check earnings on the filtered list
+    results = []
+    exclude_earnings = exclude_earnings_var.get()
+
+    for cand in candidates:
+        symbol = cand["symbol"]
+
+        if exclude_earnings:
+            has_earnings = has_earnings_during_window(symbol, long_date)
+            print(symbol, "Earnings:", has_earnings)
+
+            if has_earnings:
+                continue
+
+        h_short = f"IV {short_date} (~{dte_short} DTE)"
+        h_long = f"IV {long_date} (~{dte_long} DTE)"
+
+        results.append({
+            "Symbol": symbol,
+            h_short: f"{cand['iv_short']*100:.2f}%" if cand['iv_short'] else "N/A",
+            h_long: f"{cand['iv_long']*100:.2f}%" if cand['iv_long'] else "N/A",
+            "Forward Factor": cand["ff_pct"],
+            "FF_display": f"{cand['ff_pct']:.2f}%"
+        })
+
+    results.sort(key=lambda x: x["Forward Factor"], reverse=True)
 
     current_results = results
 
     if not results:
-        status_label.config(text="No valid results found (or no matching expirations)", fg="orange")
+        status_label.config(text="No valid results found after filters", fg="orange")
         save_btn.config(state="disabled")
         return
 
-    # Build columns
     columns = ["Symbol", h_short, h_long, "Forward Factor"]
     tree["columns"] = columns
 
@@ -387,14 +392,13 @@ def run_scan():
         tree.heading(col, text=col)
         tree.column(col, width=150, anchor="center")
 
-    # Insert rows with conditional coloring
     for res in results:
         values = [res.get(col, "N/A") for col in columns]
         values[-1] = res["FF_display"]
         tags = ("red",) if res["Forward Factor"] > 20 else ()
         tree.insert("", "end", values=values, tags=tags)
 
-    status_label.config(text=f"Scan complete — {len(results)} symbols (sorted by FF descending)", fg="green")
+    status_label.config(text=f"Scan complete — {len(results)} symbols", fg="green")
     save_btn.config(state="normal")
 
 def save_to_csv():
@@ -421,7 +425,7 @@ def save_to_csv():
 
     messagebox.showinfo("Saved", f"Results saved to:\n{file_path}")
 
-# ── Bind buttons ──
+# Bind buttons
 browse_btn.config(command=browse_csv)
 run_btn.config(command=run_scan)
 save_btn.config(command=save_to_csv)
